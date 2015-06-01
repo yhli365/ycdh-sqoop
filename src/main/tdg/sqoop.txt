@@ -1,0 +1,149 @@
+Hadoop TDG3
+
+#)15.1 获取Sqoop
+$ vi ~/.bashrc
+export SQOOP_HOME=/home/yhli/cdh/sqoop
+export PATH=$SQOOP_HOME_HOME/bin:...
+
+$ sqoop
+$ sqoop help
+$ sqoop help import
+
+$ export CLASSPATH=ycdh-zk-1.0.jar:$ZK_HOME/*:$ZK_HOME/lib/*:$ZK_HOME/conf
+
+#)15.3 一个导入的例子
+:创建一个新的MySQL数据库模式
+$ mysql -u root -p
+mysql>
+CREATE DATABASE hadoopguide;
+GRANT ALL PRIVILEGES ON hadoopguide.* TO '%'@'localhost';
+GRANT ALL PRIVILEGES ON hadoopguide.* TO ''@'localhost';
+quit;
+
+:填充数据库
+$ mysql hadoopguide
+mysql>
+CREATE TABLE widgets(
+id INT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+widget_name VARCHAR(64) NOT NULL,
+price DECIMAL(10,2),
+design_date DATE,
+version INT,
+design_comment VARCHAR(100));
+
+INSERT INTO widgets VALUES(NULL, 'sprocket', 0.25, '2010-02-10', 1, 'Connects two gizmos');
+INSERT INTO widgets VALUES(NULL, 'gizmo', 4.00, '2009-11-30', 4, NULL);
+INSERT INTO widgets VALUES(NULL, 'gadget', 99.99, '1983-08-13', 13, 'Our flagship product');
+quit;
+
+:使用Sqoop将这个表导入HDFS
+$ sqoop import \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+-m 1
+$ hadoop fs -cat widgets/part-m-00000
+
+#)15.4 生成代码
+$ ls widgets.java
+$ sqoop codegen \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--class-name com.hadoopbook.sqoop.Widget
+
+#)15.5 深入了解数据库导入
+$ sqoop import \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--direct \
+--target-dir widgets_direct \
+-m 2
+$ hadoop fs -cat widgets_direct/part-m-00000
+
+#)15.6 使用导入的数据
+:MapReduce
+$ export HADOOP_CLASSPATH=$SQOOP_HOME/sqoop-1.4.5-cdh5.2.0.jar
+$ hadoop jar ycdh-sqoop-1.0.jar com.hadoopbook.sqoop.MaxWidgetId -libjars $SQOOP_HOME/sqoop-1.4.5-cdh5.2.0.jar
+$ hadoop fs -cat maxwidget/part-r-*
+:MapReduce (Avro)
+$ hadoop fs -rm -r widgets
+$ sqoop import \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--as-avrodatafile \
+-m 2
+$ hadoop fs -ls widgets
+$ hadoop fs -rm -r maxwidget
+$ export HADOOP_CLASSPATH=$SQOOP_HOME/sqoop-1.4.5-cdh5.2.0.jar:$SQOOP_HOME/lib/avro-mapred-1.7.6-cdh5.2.0-hadoop2.jar
+$ hadoop jar ycdh-sqoop-1.0.jar com.hadoopbook.sqoop.MaxWidgetIdGenericAvro -libjars $SQOOP_HOME/sqoop-1.4.5-cdh5.2.0.jar,$SQOOP_HOME/lib/avro-mapred-1.7.6-cdh5.2.0-hadoop2.jar
+$ hadoop fs -ls maxwidget
+$ hadoop fs -cat maxwidget/part-r-*
+
+:Hive
+hive> 
+DROP TABLE IF EXISTS sales;
+CREATE TABLE sales(widget_id INT,qty INT,
+street STRING, city STRING, state STRING,
+zip INT, sale_date STRING)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ',';
+LOAD DATA LOCAL INPATH "input/sales.log" INTO TABLE sales;
+
+$ sqoop create-hive-table \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--fields-terminated-by ','
+hive> LOAD DATA INPATH "widgets" INTO TABLE widgets;
+或
+$ hdfs dfs -rm -r widgets
+$ sqoop import \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--m 1 \
+--hive-import
+
+hive>
+SELECT * FROM widgets limit 10;
+SELECT * FROM sales limit 10;
+
+CREATE TABLE zip_profits (sales_vol DOUBLE, zip INT);
+INSERT OVERWRITE TABLE zip_profits
+SELECT SUM(w.price * s.qty) AS sales_vol, s.zip FROM sales s
+JOIN widgets w ON (s.widget_id = w.id) GROUP BY s.zip;
+SELECT * FROM zip_profits ORDER BY sales_vol DESC;
+
+#)15.8 执行导出
+$ mysql hadoopguide
+mysql> CREATE TABLE sales_by_zip (volume DECIMAL(8,2), zip INTEGER);
+$ sqoop export \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table sales_by_zip \
+--export-dir /user/hive/warehouse/zip_profits \
+--input-fields-terminated-by '\0001' \
+-m 1
+$ mysql hadoopguide -e 'SELECT * FROM sales_by_zip'
+
+#)15.9 深入了解导出功能
+$ sqoop import \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets \
+--class-name WidgetHolder \
+--as-sequencefile \
+--target-dir widget_sequence_files \
+--bindir . \
+--m 1
+$ mysql hadoopguide
+mysql> CREATE TABLE widgets2(
+id INT,
+widget_name VARCHAR(100),
+price DOUBLE,
+designed DATE,
+version INT,
+notes VARCHAR(200));
+quit;
+$ sqoop export \
+--connect jdbc:mysql://localhost/hadoopguide \
+--table widgets2 \
+--class-name WidgetHolder \
+--jar-file  WidgetHolder.jar \
+--export-dir widget_sequence_files \
+-m 1
+$ mysql hadoopguide -e 'SELECT * FROM widgets2'
